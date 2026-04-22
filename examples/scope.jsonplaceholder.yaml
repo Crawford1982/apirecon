@@ -1,0 +1,4 @@
+allowHosts:
+  - jsonplaceholder.typicode.com
+pathPrefixes:
+  - /

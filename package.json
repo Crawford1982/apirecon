@@ -1,0 +1,29 @@
+{
+  "name": "apirecon",
+  "version": "0.1.0",
+  "description": "Browser-driven API discovery: capture traffic, inventory endpoints, IDOR hints, OpenAPI / GraphQL bridge to graphqlai",
+  "type": "module",
+  "main": "bin/apirecon.mjs",
+  "bin": {
+    "apirecon": "./bin/apirecon.mjs"
+  },
+  "scripts": {
+    "start": "node bin/apirecon.mjs",
+    "recon:browser": "node scripts/recon-browser.mjs",
+    "recon:analyze": "node scripts/recon-analyze.mjs",
+    "recon:replay": "node scripts/recon-replay.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0",
+    "playwright": "^1.42.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Crawford1982/apirecon.git"
+  }
+}

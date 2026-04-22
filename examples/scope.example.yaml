@@ -1,0 +1,8 @@
+# Same shape as graphqlai scope files (allowHosts + pathPrefixes).
+allowHosts:
+  - api.example.com
+  - app.example.com
+pathPrefixes:
+  - /
+maxRps: 5
+maxConcurrency: 5
