@@ -4,6 +4,11 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** Bash-safe single-quoted string for copy-paste curl one-liners. */
+export function shellSingleQuote(str) {
+  return `'${String(str).replace(/'/g, `'\\''`)}'`;
+}
+
 export class IdorReplay {
   /**
    * @param {object} opts
@@ -16,6 +21,7 @@ export class IdorReplay {
     this.scope = scope;
     this.maxRps = maxRps;
     this.timeoutMs = timeoutMs;
+    /** @type {string | null} */
     this.auth = auth;
     /** @type {unknown[]} */
     this.results = [];
@@ -40,7 +46,10 @@ export class IdorReplay {
       }
 
       for (const testPath of tests) {
-        const testUrl = `${origin}${testPath.startsWith('/') ? testPath : `/${testPath}`}`;
+        const testUrl =
+          /^https?:\/\//i.test(testPath) ?
+            testPath
+          : `${origin}${testPath.startsWith('/') ? testPath : `/${testPath}`}`;
         if (this.scope && !this.scope.isAllowed(testUrl)) continue;
 
         queue.push({
@@ -56,6 +65,30 @@ export class IdorReplay {
     }
 
     return queue;
+  }
+
+  /**
+   * Copy-paste bash `curl` for bounty write-ups (same method, URL, and headers as replay).
+   *
+   * @param {{ method?: string, testUrl: string, auth?: string | null }} opts
+   */
+  static buildReplayCurl({ method, testUrl, auth = null }) {
+    const m = String(method || 'GET').toUpperCase();
+    const parts = ['curl', '-sS'];
+    if (m !== 'GET') {
+      parts.push('-X', m);
+    }
+    parts.push(shellSingleQuote(testUrl));
+    parts.push('-H', shellSingleQuote('Accept: application/json'));
+    parts.push(
+      '-H',
+      shellSingleQuote('User-Agent: apirecon-idor-replay/0.1 (+authorized testing only)'),
+    );
+    if (auth) {
+      const a = auth.startsWith('Bearer ') ? auth : `Bearer ${auth}`;
+      parts.push('-H', shellSingleQuote(`Authorization: ${a}`));
+    }
+    return parts.join(' ');
   }
 
   /**
@@ -118,6 +151,7 @@ export class IdorReplay {
       }
 
       const duration = Date.now() - start;
+      const finding = this.classifyFinding(response.status, body);
 
       return {
         status: 'completed',
@@ -132,7 +166,12 @@ export class IdorReplay {
         duration,
         idorRisk: testCase.idorRisk,
         idType: testCase.idType,
-        finding: this.classifyFinding(response.status, body),
+        finding,
+        replayCurl: IdorReplay.buildReplayCurl({
+          method: testCase.method,
+          testUrl: testCase.testUrl,
+          auth: this.auth,
+        }),
       };
     } catch (error) {
       return {
@@ -144,6 +183,11 @@ export class IdorReplay {
         idorRisk: testCase.idorRisk,
         idType: testCase.idType,
         finding: null,
+        replayCurl: IdorReplay.buildReplayCurl({
+          method: testCase.method,
+          testUrl: testCase.testUrl,
+          auth: this.auth,
+        }),
       };
     }
   }

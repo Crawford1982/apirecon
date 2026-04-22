@@ -151,7 +151,10 @@ async function analyzeFlow(trafficFilePath, ts) {
   console.log(`IDOR candidates (heuristic): ${idorCandidates.length}`);
   if (idorCandidates.length && IDOR_ONLY) {
     idorCandidates.slice(0, 40).forEach((c, i) => {
-      console.log(`  ${i + 1}. [${c.idorRisk}] ${c.method} ${c.path} (${c.idType}: ${c.idValue})`);
+      const q = /** @type {{ queryParam?: string }} */ (c).queryParam;
+      console.log(
+        `  ${i + 1}. [${c.idorRisk}] ${c.method} ${c.path} (${c.idType}: ${c.idValue})${q ? ` ?${q}` : ''}`,
+      );
     });
   }
 
@@ -259,7 +262,7 @@ async function main() {
 
     const replay = new IdorReplay({
       scope,
-      maxRps: MAX_RPS,
+      maxRps: typeof scope?.maxRps === 'number' ? scope.maxRps : MAX_RPS,
       timeoutMs: TIMEOUT_MS,
       auth: AUTH,
     });

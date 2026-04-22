@@ -11,7 +11,8 @@ npm install
 npx playwright install chromium
 
 # Capture (interactive — press ENTER when finished clicking around)
-npm run recon:browser -- --target https://jsonplaceholder.typicode.com --scope-file ./examples/scope.jsonplaceholder.yaml --headless
+# Use a JSON resource URL so the page actually issues JSON API traffic (the home page is HTML-only).
+npm run recon:browser -- --target https://jsonplaceholder.typicode.com/posts/1 --scope-file ./examples/scope.jsonplaceholder.yaml --headless
 
 # Analyze an existing capture
 npm run recon:analyze -- --traffic-file ./output/traffic-raw-<ts>.json --scope-file ./examples/scope.example.yaml
@@ -20,7 +21,7 @@ npm run recon:analyze -- --traffic-file ./output/traffic-raw-<ts>.json --scope-f
 npm run recon:replay -- --traffic-file ./output/traffic-raw-<ts>.json --scope-file ./examples/scope.example.yaml --auth "$RECON_AUTH_TOKEN"
 ```
 
-Artifacts land in `./output/` by default: `traffic-raw-*.json`, `recon-report-*.json`, `recon-openapi-*.json`, `recon-graphql-*.json`, and replay `idor-replay-*.json`.
+Artifacts land in `./output/` by default: `traffic-raw-*.json`, `recon-report-*.json`, `recon-openapi-*.json`, `recon-graphql-*.json`, and replay `idor-replay-*.json`. Each replay result includes **`replayCurl`** (bash-safe `curl` one-liner matching the probe, including `Authorization` when you passed `--auth` / `RECON_AUTH_TOKEN`).
 
 ## Relationship to graphqlai
 
