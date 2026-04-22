@@ -1,0 +1,10 @@
+allowHosts:
+  - you.23andme.com
+  - api.23andme.com
+  - auth.23andme.com
+  - sapi-live.lh.us-west-2.prd.23andme.us
+  - store.23andme.com
+pathPrefixes:
+  - /
+maxRps: 5
+maxConcurrency: 5
