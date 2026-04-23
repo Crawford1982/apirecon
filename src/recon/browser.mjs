@@ -218,8 +218,24 @@ export async function launchBrowser({
   process.once('SIGINT', onSigint);
 
   try {
-    console.log(`Navigating to ${target}...`);
-    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    console.log(`Navigating to ${target}…`);
+    console.log(
+      '  If the window shows about:blank, that is normal until the response arrives (can take 30–60s on slow networks).',
+    );
+    console.log(`  Timeout for this step: ${Math.round(timeoutMs / 1000)}s (--timeout-ms to increase).`);
+
+    try {
+      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    } catch (e) {
+      const err = /** @type {Error} */ (e);
+      console.error(`[apirecon] Navigation failed: ${err.message}`);
+      console.error(
+        '  Fixes: quit all Chrome windows and retry --use-chrome-profile; try without --use-chrome-profile; check VPN/firewall/DNS; increase --timeout-ms.',
+      );
+      throw e;
+    }
+
+    console.log(`[apirecon] Loaded: ${page.url()}`);
 
     if (onReady) await onReady();
 
