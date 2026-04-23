@@ -1,6 +1,12 @@
 import { chromium } from 'playwright';
 
 import { AutoNavigator } from './auto-navigator.mjs';
+import { defaultChromeUserDataDir } from './chrome-profile.mjs';
+import {
+  findPageOnHost,
+  tryAssistGoogleOAuth,
+  waitUntilHostname,
+} from './wait-for-auth.mjs';
 import { sleep } from './utils.mjs';
 
 /**
@@ -30,6 +36,11 @@ import { sleep } from './utils.mjs';
  * @param {boolean} [opts.autoNavigate]
  * @param {object} [opts.autoNavigateOptions]
  * @param {number} [opts.autoNavigateLoginGraceMs]
+ * @param {boolean} [opts.useChromeProfile] launchPersistentContext with real Chrome user data (Google OAuth session reuse)
+ * @param {string} [opts.chromeUserDataDir] defaults to OS Chrome “User Data” path + env APIRECON_CHROME_USER_DATA
+ * @param {string} [opts.chromeProfileDirectory] “Default”, “Profile 1”, …
+ * @param {number} [opts.loginTimeoutMs] wait for you.23andme.com during OAuth (default 180000)
+ * @param {boolean} [opts.waitForYouApp] after navigation, poll until hostname is you.23andme.com (23andMe targets)
  * @returns {Promise<CapturedRequest[]>}
  */
 export async function launchBrowser({
@@ -41,87 +52,161 @@ export async function launchBrowser({
   autoNavigate = false,
   autoNavigateOptions = {},
   autoNavigateLoginGraceMs = 5000,
+  useChromeProfile = false,
+  chromeUserDataDir = '',
+  chromeProfileDirectory = 'Default',
+  loginTimeoutMs = 180000,
+  waitForYouApp = false,
 }) {
-  const browser = await chromium.launch({
-    headless,
-    args: ['--disable-blink-features=AutomationControlled'],
-  });
+  /** @type {import('playwright').Browser | null} */
+  let browser = null;
+  /** @type {import('playwright').BrowserContext} */
+  let context;
+  /** @type {import('playwright').Page} */
+  let page;
 
-  const context = await browser.newContext({
-    viewport: { width: 1280, height: 720 },
-    userAgent:
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  });
-
-  const page = await context.newPage();
   /** @type {CapturedRequest[]} */
   const traffic = [];
 
-  // Running counters for heartbeat
   let totalRequests = 0;
   let inScopeRequests = 0;
   let jsonApiRequests = 0;
 
-  page.on('requestfinished', async (request) => {
-    const url = request.url();
-    totalRequests++;
-    if (scope && !scope.isAllowed(url)) return;
-    inScopeRequests++;
+  /** @type {WeakSet<import('playwright').Page>} */
+  const attachedPages = new WeakSet();
 
-    const response = await request.response();
-    const t0 = Date.now();
+  /**
+   * @param {import('playwright').Page} p
+   */
+  function attachTrafficToPage(p) {
+    if (attachedPages.has(p)) return;
+    attachedPages.add(p);
 
-    /** @type {CapturedRequest} */
-    const row = {
-      type: 'request',
-      timestamp: t0,
-      url,
-      method: request.method(),
-      headers: request.headers(),
-      postData: request.postData() ?? undefined,
-      resourceType: request.resourceType(),
-    };
+    p.on('requestfinished', async (request) => {
+      const url = request.url();
+      totalRequests++;
+      if (scope && !scope.isAllowed(url)) return;
+      inScopeRequests++;
 
-    if (!response) {
-      row.error = 'no_response';
-      traffic.push(row);
-      return;
-    }
+      const response = await request.response();
+      const t0 = Date.now();
 
-    row.status = response.status();
-    row.statusText = response.statusText();
-    row.responseHeaders = response.headers();
-    row.responseTime = Math.max(0, Date.now() - t0);
+      /** @type {CapturedRequest} */
+      const row = {
+        type: 'request',
+        timestamp: t0,
+        url,
+        method: request.method(),
+        headers: request.headers(),
+        postData: request.postData() ?? undefined,
+        resourceType: request.resourceType(),
+      };
 
-    const ct = (response.headers()['content-type'] || '').toLowerCase();
-    const rt = String(request.resourceType() || '').toLowerCase();
-    if (ct.includes('application/json') || (['xhr', 'fetch'].includes(rt) && ct.includes('json'))) {
-      jsonApiRequests++;
-      try {
-        row.responseBody = await response.json();
-      } catch {
+      if (!response) {
+        row.error = 'no_response';
+        traffic.push(row);
+        return;
+      }
+
+      row.status = response.status();
+      row.statusText = response.statusText();
+      row.responseHeaders = response.headers();
+      row.responseTime = Math.max(0, Date.now() - t0);
+
+      const ct = (response.headers()['content-type'] || '').toLowerCase();
+      const rt = String(request.resourceType() || '').toLowerCase();
+      if (ct.includes('application/json') || (['xhr', 'fetch'].includes(rt) && ct.includes('json'))) {
+        jsonApiRequests++;
         try {
-          const t = await response.text();
-          row.responseBody = t;
-        } catch (e) {
-          row.error = /** @type {Error} */ (e).message;
+          row.responseBody = await response.json();
+        } catch {
+          try {
+            const t = await response.text();
+            row.responseBody = t;
+          } catch (e) {
+            row.error = /** @type {Error} */ (e).message;
+          }
         }
       }
-    }
 
-    traffic.push(row);
-  });
+      traffic.push(row);
+    });
 
-  page.on('console', (msg) => {
-    if (msg.type() === 'error') {
-      traffic.push({
-        type: 'console-error',
-        timestamp: Date.now(),
-        text: msg.text(),
-        location: msg.location(),
+    p.on('console', (msg) => {
+      if (msg.type() === 'error') {
+        traffic.push({
+          type: 'console-error',
+          timestamp: Date.now(),
+          text: msg.text(),
+          location: msg.location(),
+        });
+      }
+    });
+  }
+
+  const effectiveHeadless = useChromeProfile ? false : headless;
+  if (useChromeProfile && headless) {
+    console.warn('[apirecon] --use-chrome-profile needs a visible browser — ignoring --headless.');
+  }
+  if (useChromeProfile) {
+    console.warn(
+      '[apirecon] Close all regular Chrome windows before using --use-chrome-profile or the profile may be locked.',
+    );
+  }
+
+  const userDataDir = useChromeProfile ?
+      chromeUserDataDir.trim() || process.env.APIRECON_CHROME_USER_DATA?.trim() || defaultChromeUserDataDir()
+    : '';
+
+  if (useChromeProfile) {
+    console.log(`[apirecon] Chrome profile: ${userDataDir} (directory: ${chromeProfileDirectory})`);
+
+    /** @type {import('playwright').LaunchPersistentContextOptions} */
+    const persistOpts = {
+      channel: 'chrome',
+      headless: false,
+      viewport: { width: 1280, height: 720 },
+      args: [
+        '--disable-blink-features=AutomationControlled',
+        `--profile-directory=${chromeProfileDirectory}`,
+        '--no-first-run',
+        '--no-default-browser-check',
+      ],
+    };
+
+    try {
+      context = await chromium.launchPersistentContext(userDataDir, persistOpts);
+    } catch (e) {
+      const msg = /** @type {Error} */ (e).message;
+      console.warn(`[apirecon] launchPersistentContext(channel:chrome) failed (${msg}). Retrying without channel…`);
+      context = await chromium.launchPersistentContext(userDataDir, {
+        ...persistOpts,
+        channel: undefined,
       });
     }
-  });
+
+    context.on('page', (newPage) => attachTrafficToPage(newPage));
+
+    const existing = context.pages()[0];
+    page = existing ?? (await context.newPage());
+    attachTrafficToPage(page);
+  } else {
+    browser = await chromium.launch({
+      headless: effectiveHeadless,
+      args: ['--disable-blink-features=AutomationControlled'],
+    });
+
+    context = await browser.newContext({
+      viewport: { width: 1280, height: 720 },
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    });
+
+    context.on('page', (newPage) => attachTrafficToPage(newPage));
+
+    page = await context.newPage();
+    attachTrafficToPage(page);
+  }
 
   /** @type {AbortController} */
   const abortController = new AbortController();
@@ -138,6 +223,34 @@ export async function launchBrowser({
 
     if (onReady) await onReady();
 
+    if (String(target).includes('23andme.com')) {
+      await tryAssistGoogleOAuth(page);
+    }
+
+    if (waitForYouApp) {
+      console.log(
+        `[apirecon] Waiting up to ${Math.round(loginTimeoutMs / 1000)}s for you.23andme.com (complete OAuth in the browser)…`,
+      );
+
+      const landed = await waitUntilHostname(page, 'you.23andme.com', loginTimeoutMs, (msg) =>
+        console.log('[apirecon]', msg),
+      );
+      if (!landed) {
+        console.warn(
+          '[apirecon] Timed out waiting for you.23andme.com — finish login in the browser, then press ENTER / continue.',
+        );
+      }
+
+      const onYou = await findPageOnHost(context, 'you.23andme.com');
+      if (onYou) {
+        await onYou.bringToFront();
+        page = onYou;
+        console.log(`[apirecon] Using tab: ${page.url()}`);
+      } else {
+        console.warn(`[apirecon] Could not find a tab on you.23andme.com yet (current: ${page.url()}).`);
+      }
+    }
+
     /** @type {() => { total: number, inScope: number, jsonApi: number }} */
     const getTrafficStats = () => ({
       total: totalRequests,
@@ -146,7 +259,10 @@ export async function launchBrowser({
     });
 
     const runNavigator = async () => {
-      const nav = new AutoNavigator(page, {
+      let crawlPage = (await findPageOnHost(context, 'you.23andme.com')) ?? page;
+      await crawlPage.bringToFront().catch(() => {});
+
+      const nav = new AutoNavigator(crawlPage, {
         verbose: true,
         getTrafficStats,
         signal: abortController.signal,
@@ -157,12 +273,12 @@ export async function launchBrowser({
 
     if (autoNavigate) {
       console.log(
-        `Auto-navigate: waiting ${autoNavigateLoginGraceMs}ms — log in now if needed, then crawl starts.`,
+        `Auto-navigate: waiting ${autoNavigateLoginGraceMs}ms, then crawl (you should already be on you.23andme.com if --wait ran).`,
       );
       await sleep(autoNavigateLoginGraceMs);
       await runNavigator();
     } else {
-      console.log('Browser is open. Log in manually, then:');
+      console.log('Browser is open. When the app is ready:');
       console.log('  [ENTER] or "a" + ENTER → automated SPA crawl (safe — skips destructive actions)');
       console.log('  any other input + ENTER → finish capture now');
       console.log('');
@@ -179,7 +295,8 @@ export async function launchBrowser({
     await sleep(3000);
   } finally {
     process.off('SIGINT', onSigint);
-    await browser.close().catch(() => {});
+    await context.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
   }
 
   return traffic.filter((t) => t.type === 'request' && typeof t.status === 'number');

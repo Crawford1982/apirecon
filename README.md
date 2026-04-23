@@ -28,6 +28,18 @@ npm run recon:replay -- --traffic-file ./output/traffic-raw-<ts>.json --scope-fi
 
 Artifacts land in `./output/` by default: `traffic-raw-*.json`, `recon-report-*.json`, `recon-openapi-*.json`, `recon-graphql-*.json`, and replay `idor-replay-*.json`. Each replay result includes **`replayCurl`** (bash-safe `curl` one-liner matching the probe, including `Authorization` when you passed `--auth` / `RECON_AUTH_TOKEN`).
 
+### 23andMe: Chrome profile + OAuth
+
+For **`you.23andme.com`**, recon defaults to **waiting until the tab reaches `you.23andme.com`** (OAuth redirect dance). Close regular Chrome first, then reuse your Google session:
+
+```bash
+npm run recon:browser -- --target https://you.23andme.com --scope-file ./examples/scope.23andme.yaml --use-chrome-profile
+```
+
+Optional: `--chrome-user-data "C:\\Users\\YOU\\AppData\\Local\\Google\\Chrome\\User Data"` and `--chrome-profile-dir Default` (or `Profile 1`). Overrides: env `APIRECON_CHROME_USER_DATA`, `APIRECON_CHROME_PROFILE_DIR`. Use `--no-wait-for-you-app` only if you intentionally want to crawl from `auth.23andme.com`.
+
+The tool never asks for Google passwords — it only opens the browser so you can finish OAuth / 2FA yourself; **`--use-chrome-profile`** makes **Sign in with Google** reuse cookies from disk when Playwright launches Chrome (`channel: 'chrome'`).
+
 ## Relationship to graphqlai
 
 1. Use **apirecon** to find probable **GraphQL HTTP** URLs (`recon-graphql-*.json`).

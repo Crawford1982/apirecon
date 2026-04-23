@@ -39,6 +39,11 @@ OPTIONS:
   --auth <token>               Bearer token for replay (or RECON_AUTH_TOKEN env)
   --ci                         Replay/analyze: exit 2 when high-severity replay hits
   --auto-navigate, -a          After load: wait 5s then auto-click crawl (browser mode; skip ENTER)
+  --use-chrome-profile        Use your real Chrome user-data dir (Google OAuth reuse; closes clean browser)
+  --chrome-user-data <dir>    Chrome “User Data” folder (Windows: …\\Chrome\\User Data); env APIRECON_CHROME_USER_DATA
+  --chrome-profile-dir <name>  Profile folder name inside User Data (Default, Profile 1, …); env APIRECON_CHROME_PROFILE_DIR
+  --login-timeout-ms <n>       Max wait for https://you.23andme.com after OAuth (default 180000)
+  --no-wait-for-you-app       Skip polling for you.23andme.com before crawl (not recommended for 23andMe)
   --help, -h
   --version, -V
 `;
@@ -63,6 +68,11 @@ const { values } = parseArgs({
     auth: { type: 'string' },
     ci: { type: 'boolean', default: false },
     'auto-navigate': { type: 'boolean', short: 'a', default: false },
+    'use-chrome-profile': { type: 'boolean', default: false },
+    'chrome-user-data': { type: 'string' },
+    'chrome-profile-dir': { type: 'string' },
+    'login-timeout-ms': { type: 'string' },
+    'no-wait-for-you-app': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
     version: { type: 'boolean', short: 'V', default: false },
   },
@@ -94,6 +104,16 @@ const EXPORT_GRAPHQL = !argvList.includes('--no-export-graphql');
 const IDOR_ONLY = values['idor-only'] === true;
 const CI = values.ci === true;
 const AUTO_NAVIGATE = values['auto-navigate'] === true;
+const USE_CHROME_PROFILE = values['use-chrome-profile'] === true;
+const CHROME_USER_DATA =
+  values['chrome-user-data']?.trim() || process.env.APIRECON_CHROME_USER_DATA?.trim() || '';
+const CHROME_PROFILE_DIR =
+  values['chrome-profile-dir']?.trim() || process.env.APIRECON_CHROME_PROFILE_DIR?.trim() || 'Default';
+const LOGIN_TIMEOUT_MS =
+  parseInt(String(values['login-timeout-ms'] ?? process.env.APIRECON_LOGIN_TIMEOUT_MS ?? ''), 10) ||
+  180000;
+const WAIT_FOR_YOU_APP =
+  values['no-wait-for-you-app'] !== true && String(TARGET || '').includes('23andme.com');
 const AUTH =
   values.auth?.trim() ||
   process.env.RECON_AUTH_TOKEN?.trim() ||
@@ -215,6 +235,11 @@ async function main() {
     const trafficFile = TRAFFIC_FILE || `${OUTPUT_DIR}/traffic-raw-${TS}.json`;
 
     console.log(`Browser mode → ${trafficFile}`);
+    if (USE_CHROME_PROFILE) {
+      console.log(
+        'Chrome profile mode: uses your Google session from disk (close Chrome first to avoid profile lock).\n',
+      );
+    }
     if (AUTO_NAVIGATE) {
       console.log(
         'Auto-navigate on: after navigation, 5s grace for login, then automated SPA crawl (no ENTER).\n',
@@ -222,6 +247,11 @@ async function main() {
     } else {
       console.log(
         'When ready: ENTER or "a" + ENTER to auto-crawl; other input + ENTER finishes capture.\n',
+      );
+    }
+    if (WAIT_FOR_YOU_APP) {
+      console.log(
+        'Will wait for https://you.23andme.com/ (OAuth). Use --no-wait-for-you-app to skip.\n',
       );
     }
 
@@ -235,6 +265,11 @@ async function main() {
         clickDelay: 2000,
         scrollDelay: 1200,
       },
+      useChromeProfile: USE_CHROME_PROFILE,
+      chromeUserDataDir: CHROME_USER_DATA,
+      chromeProfileDirectory: CHROME_PROFILE_DIR,
+      loginTimeoutMs: LOGIN_TIMEOUT_MS,
+      waitForYouApp: WAIT_FOR_YOU_APP,
     });
 
     writeFileSync(trafficFile, JSON.stringify(traffic, null, 2));
