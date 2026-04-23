@@ -10,7 +10,6 @@ import { sleep } from './utils.mjs';
 const DESTRUCTIVE_TEXT = [
   /\blog\s*out\b/i,
   /\bsign\s*out\b/i,
-  /\bsign\s*in\b/i,
   /\bdelete\b/i,
   /\bremove\b/i,
   /\bdeactivate\b/i,
@@ -41,6 +40,10 @@ const DESTRUCTIVE_TEXT = [
 ];
 
 const DESTRUCTIVE_HREF = [
+  /\/signup/i,
+  /\/sign-up/i,
+  /\/register/i,
+  /\/create-account/i,
   /\/logout/i,
   /\/signout/i,
   /\/sign-out/i,
@@ -102,6 +105,9 @@ export class AutoNavigator {
    * @param {(() => { total: number, inScope: number, jsonApi: number })} [options.getTrafficStats]
    * @param {AbortSignal} [options.signal]
    * @param {string[]} [options.extraDestructiveText] additional deny-list patterns (strings)
+   * @param {string[]} [options.excludeCrawlHosts] lowercase hostnames — never visit or enqueue (e.g. auth.23andme.com after login)
+   * @param {string[]} [options.allowedCrawlHosts] if non-empty, only these hosts may be crawled (overrides exclude-only mode)
+   * @param {string[]} [options.skipFormFillHosts] never auto-fill inputs on these hosts (signup forms live here)
    */
   constructor(page, options = {}) {
     this.page = page;
@@ -119,6 +125,9 @@ export class AutoNavigator {
       getTrafficStats: options.getTrafficStats ?? null,
       signal: options.signal ?? null,
       extraDestructiveText: options.extraDestructiveText ?? [],
+      excludeCrawlHosts: (options.excludeCrawlHosts ?? []).map((h) => h.toLowerCase()),
+      allowedCrawlHosts: (options.allowedCrawlHosts ?? []).map((h) => h.toLowerCase()),
+      skipFormFillHosts: (options.skipFormFillHosts ?? []).map((h) => h.toLowerCase()),
     };
 
     /** @type {RegExp[]} */
@@ -161,6 +170,11 @@ export class AutoNavigator {
     this.log('Auto-navigator starting');
     this.log(`  origin:  ${this.startOrigin}`);
     this.log(`  limits:  ${this.options.maxRoutes} routes · ${this.options.maxTotalClicks} clicks · ${Math.round(this.options.maxDurationMs / 1000)}s`);
+    if (this.options.allowedCrawlHosts.length) {
+      this.log(`  crawl only hosts: ${this.options.allowedCrawlHosts.join(', ')}`);
+    } else if (this.options.excludeCrawlHosts.length) {
+      this.log(`  skipped hosts: ${this.options.excludeCrawlHosts.join(', ')}`);
+    }
     this.log('');
 
     await this.hookPushState();
@@ -202,6 +216,20 @@ export class AutoNavigator {
   async visitRoute(targetUrl) {
     const key = this.routeKey(targetUrl);
     if (this.visitedRoutes.has(key)) return;
+
+    let hostname;
+    try {
+      hostname = new URL(targetUrl).hostname.toLowerCase();
+    } catch {
+      return;
+    }
+
+    if (this.isCrawlHostBlocked(hostname)) {
+      this.visitedRoutes.add(key);
+      if (this.options.verbose) this.log(`   skipped (blocked host ${hostname}): ${targetUrl}`);
+      return;
+    }
+
     this.visitedRoutes.add(key);
 
     const currentKey = this.routeKey(this.page.url());
@@ -245,9 +273,43 @@ export class AutoNavigator {
   async interactOnCurrentPage(stillBudgeted) {
     await this.clickTabs(stillBudgeted);
     await this.clickButtons(stillBudgeted);
-    if (this.options.fillForms) {
+    if (this.options.fillForms && !(await this.shouldSkipFormFills())) {
       await this.exerciseInputs(stillBudgeted);
       await this.exerciseSelects(stillBudgeted);
+    }
+  }
+
+  /** Do not hammer signup/login forms with dummy data on auth hosts. */
+  async shouldSkipFormFills() {
+    try {
+      const h = new URL(this.page.url()).hostname.toLowerCase();
+      return this.options.skipFormFillHosts.some((x) => x === h);
+    } catch {
+      return false;
+    }
+  }
+
+  /** @param {string} hostname lowercased */
+  isCrawlHostBlocked(hostname) {
+    const h = hostname.toLowerCase();
+    if (this.options.allowedCrawlHosts.length) {
+      return !this.options.allowedCrawlHosts.includes(h);
+    }
+    return this.options.excludeCrawlHosts.includes(h);
+  }
+
+  /** @param {string} href */
+  isSignupStylePath(href) {
+    try {
+      const p = new URL(href).pathname.toLowerCase();
+      return (
+        p.includes('/signup') ||
+        p.includes('/sign-up') ||
+        p.includes('/register') ||
+        p.includes('/create-account')
+      );
+    } catch {
+      return false;
     }
   }
 
@@ -589,6 +651,16 @@ export class AutoNavigator {
     for (const href of hrefs) {
       if (this.visitedRoutes.size + this.routeQueue.length >= this.options.maxRoutes * 2) break;
       if (!/^https?:/i.test(href)) continue;
+
+      let linkHost = '';
+      try {
+        linkHost = new URL(href).hostname.toLowerCase();
+      } catch {
+        continue;
+      }
+      if (this.isCrawlHostBlocked(linkHost)) continue;
+      if (this.isSignupStylePath(href)) continue;
+
       const origin = safeOrigin(href);
       if (!origin || origin !== this.startOrigin) {
         // Also allow same-origin as current page (handles OAuth bounces that
@@ -672,10 +744,17 @@ export class AutoNavigator {
   }
 
   enqueueCurrentUrl() {
-    const key = this.routeKey(this.page.url());
+    const url = this.page.url();
+    try {
+      const h = new URL(url).hostname.toLowerCase();
+      if (this.isCrawlHostBlocked(h)) return;
+    } catch {
+      return;
+    }
+    const key = this.routeKey(url);
     if (this.visitedRoutes.has(key)) return;
     if (this.routeQueue.some((u) => this.routeKey(u) === key)) return;
-    this.routeQueue.unshift(this.page.url());
+    this.routeQueue.unshift(url);
   }
 
   async hookPushState() {
@@ -707,6 +786,9 @@ export class AutoNavigator {
         if (!u || typeof u !== 'string') return;
         try {
           const abs = new URL(u, this.page.url()).toString();
+          const host = new URL(abs).hostname.toLowerCase();
+          if (this.isCrawlHostBlocked(host)) return;
+          if (this.isSignupStylePath(abs)) return;
           const key = this.routeKey(abs);
           if (this.visitedRoutes.has(key)) return;
           if (this.routeQueue.some((x) => this.routeKey(x) === key)) return;

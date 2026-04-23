@@ -40,6 +40,8 @@ Optional: `--chrome-user-data "C:\\Users\\YOU\\AppData\\Local\\Google\\Chrome\\U
 
 The tool never asks for Google passwords — it only opens the browser so you can finish OAuth / 2FA yourself; **`--use-chrome-profile`** makes **Sign in with Google** reuse cookies from disk when Playwright launches Chrome (`channel: 'chrome'`).
 
+For **23andMe** targets, the auto-crawler **does not navigate back to `auth.23andme.com`** or **`/signup`** (so it won’t try to register a new account), and it **won’t fill dummy text into login/signup forms** on that host. You still must complete login yourself until the URL is **`you.23andme.com`** — otherwise the capture stays mostly auth noise.
+
 ## Relationship to graphqlai
 
 1. Use **apirecon** to find probable **GraphQL HTTP** URLs (`recon-graphql-*.json`).

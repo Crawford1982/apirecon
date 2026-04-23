@@ -30,6 +30,10 @@ test('destructive hrefs are flagged regardless of text', () => {
     isDestructiveAction({ text: 'Click me', href: '/logout' }).destructive,
     true,
   );
+  assert.strictEqual(
+    isDestructiveAction({ text: 'Join', href: 'https://auth.23andme.com/signup/' }).destructive,
+    true,
+  );
 });
 
 test('benign actions are allowed', () => {

@@ -286,6 +286,12 @@ export async function launchBrowser({
         getTrafficStats,
         signal: abortController.signal,
         ...autoNavigateOptions,
+        ...(String(target).includes('23andme.com') ?
+          {
+            excludeCrawlHosts: ['auth.23andme.com'],
+            skipFormFillHosts: ['auth.23andme.com'],
+          }
+        : {}),
       });
       await nav.run();
     };
