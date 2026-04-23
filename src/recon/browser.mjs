@@ -5,7 +5,7 @@ import { defaultChromeUserDataDir } from './chrome-profile.mjs';
 import {
   findPageOnHost,
   tryAssistGoogleOAuth,
-  waitUntilHostname,
+  waitUntilHostnameInContext,
 } from './wait-for-auth.mjs';
 import { sleep } from './utils.mjs';
 
@@ -245,10 +245,13 @@ export async function launchBrowser({
 
     if (waitForYouApp) {
       console.log(
-        `[apirecon] Waiting up to ${Math.round(loginTimeoutMs / 1000)}s for you.23andme.com (complete OAuth in the browser)…`,
+        `[apirecon] Waiting up to ${Math.round(loginTimeoutMs / 1000)}s for any tab to reach you.23andme.com …`,
+      );
+      console.log(
+        '[apirecon] If you stay on auth.23andme.com, complete login in the browser window (including Google / 2FA).',
       );
 
-      const landed = await waitUntilHostname(page, 'you.23andme.com', loginTimeoutMs, (msg) =>
+      const landed = await waitUntilHostnameInContext(context, 'you.23andme.com', loginTimeoutMs, (msg) =>
         console.log('[apirecon]', msg),
       );
       if (!landed) {

@@ -23,29 +23,46 @@ export async function tryAssistGoogleOAuth(page) {
 }
 
 /**
- * Poll until URL hostname matches, or timeout. Use for OAuth redirect completion.
+ * Poll until **any** open tab/window has this hostname (OAuth often lands on you.* in the same tab,
+ * but popups / redirects can leave the “current” Page object stale).
  *
- * @param {import('playwright').Page} page
+ * @param {import('playwright').BrowserContext} context
  * @param {string} hostname e.g. you.23andme.com
  * @param {number} timeoutMs
  * @param {(msg: string) => void} [onTick]
  */
-export async function waitUntilHostname(page, hostname, timeoutMs, onTick) {
+export async function waitUntilHostnameInContext(context, hostname, timeoutMs, onTick) {
   const deadline = Date.now() + timeoutMs;
   let lastLog = 0;
 
   while (Date.now() < deadline) {
-    try {
-      const h = new URL(page.url()).hostname;
-      if (h === hostname) return true;
-    } catch {
-      /* ignore */
+    for (const p of context.pages()) {
+      try {
+        if (new URL(p.url()).hostname === hostname) return true;
+      } catch {
+        /* ignore */
+      }
     }
+
     const now = Date.now();
     if (onTick && now - lastLog > 15000) {
       lastLog = now;
       try {
-        onTick(`still waiting for https://${hostname}/ … (current: ${page.url()})`);
+        const urls = context
+          .pages()
+          .map((p) => {
+            try {
+              return p.url();
+            } catch {
+              return '';
+            }
+          })
+          .filter(Boolean);
+        const onAuth = urls.some((u) => u.includes('auth.23andme.com'));
+        const hint = onAuth ?
+            'You are still on auth.23andme.com — finish email/password or “Sign in with Google”, complete 2FA if prompted, then wait for redirect to you.23andme.com.'
+        : 'Waiting for any tab to reach you.23andme.com …';
+        onTick(`${hint} Open URLs: ${urls.join(' | ') || '(none)'}`);
       } catch {
         /* ignore */
       }
@@ -53,6 +70,16 @@ export async function waitUntilHostname(page, hostname, timeoutMs, onTick) {
     await sleep(400);
   }
   return false;
+}
+
+/**
+ * @param {import('playwright').Page} page
+ * @param {string} hostname
+ * @param {number} timeoutMs
+ * @param {(msg: string) => void} [onTick]
+ */
+export async function waitUntilHostname(page, hostname, timeoutMs, onTick) {
+  return waitUntilHostnameInContext(page.context(), hostname, timeoutMs, onTick);
 }
 
 /**
