@@ -38,6 +38,7 @@ OPTIONS:
   --idor-only                  Analyze: print IDOR summary only (still writes report)
   --auth <token>               Bearer token for replay (or RECON_AUTH_TOKEN env)
   --ci                         Replay/analyze: exit 2 when high-severity replay hits
+  --auto-navigate, -a          After load: wait 5s then auto-click crawl (browser mode; skip ENTER)
   --help, -h
   --version, -V
 `;
@@ -61,6 +62,7 @@ const { values } = parseArgs({
     'idor-only': { type: 'boolean', default: false },
     auth: { type: 'string' },
     ci: { type: 'boolean', default: false },
+    'auto-navigate': { type: 'boolean', short: 'a', default: false },
     help: { type: 'boolean', short: 'h', default: false },
     version: { type: 'boolean', short: 'V', default: false },
   },
@@ -91,6 +93,7 @@ const EXPORT_OPENAPI = !argvList.includes('--no-export-openapi');
 const EXPORT_GRAPHQL = !argvList.includes('--no-export-graphql');
 const IDOR_ONLY = values['idor-only'] === true;
 const CI = values.ci === true;
+const AUTO_NAVIGATE = values['auto-navigate'] === true;
 const AUTH =
   values.auth?.trim() ||
   process.env.RECON_AUTH_TOKEN?.trim() ||
@@ -212,13 +215,26 @@ async function main() {
     const trafficFile = TRAFFIC_FILE || `${OUTPUT_DIR}/traffic-raw-${TS}.json`;
 
     console.log(`Browser mode → ${trafficFile}`);
-    console.log('When the page loads, interact with the app; press ENTER here to finish capture.\n');
+    if (AUTO_NAVIGATE) {
+      console.log(
+        'Auto-navigate on: after navigation, 5s grace for login, then automated SPA crawl (no ENTER).\n',
+      );
+    } else {
+      console.log(
+        'When ready: ENTER or "a" + ENTER to auto-crawl; other input + ENTER finishes capture.\n',
+      );
+    }
 
     const traffic = await launchBrowser({
       target: TARGET,
       headless: HEADLESS,
       scope,
       timeoutMs: TIMEOUT_MS,
+      autoNavigate: AUTO_NAVIGATE,
+      autoNavigateOptions: {
+        clickDelay: 2000,
+        scrollDelay: 1200,
+      },
     });
 
     writeFileSync(trafficFile, JSON.stringify(traffic, null, 2));

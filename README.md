@@ -10,9 +10,14 @@ Forked from the workflow and YAML scope conventions used in `graphqlai`, but int
 npm install
 npx playwright install chromium
 
-# Capture (interactive — press ENTER when finished clicking around)
+# Capture (interactive — ENTER or `a` + ENTER runs an optional SPA auto-crawl after you log in)
 # Use a JSON resource URL so the page actually issues JSON API traffic (the home page is HTML-only).
 npm run recon:browser -- --target https://jsonplaceholder.typicode.com/posts/1 --scope-file ./examples/scope.jsonplaceholder.yaml --headless
+
+# Or skip ENTER: `--auto-navigate` / `-a` waits 5s after login, then runs an SPA crawler that walks
+# routes BFS-style, clicks nav/tabs/buttons, exercises forms/selects with safe values, paginates
+# ("Load more" / "Next"), scrolls for lazy content, and prints a live traffic heartbeat. It skips
+# destructive actions (log out, delete, remove, cancel subscription, purchase, etc.) by default.
 
 # Analyze an existing capture
 npm run recon:analyze -- --traffic-file ./output/traffic-raw-<ts>.json --scope-file ./examples/scope.example.yaml

@@ -1,5 +1,8 @@
 import { chromium } from 'playwright';
 
+import { AutoNavigator } from './auto-navigator.mjs';
+import { sleep } from './utils.mjs';
+
 /**
  * @typedef {object} CapturedRequest
  * @property {'request'} type
@@ -24,9 +27,21 @@ import { chromium } from 'playwright';
  * @param {{ isAllowed: (url: string) => boolean } | null} [opts.scope]
  * @param {number} [opts.timeoutMs]
  * @param {() => Promise<void>} [opts.onReady]
+ * @param {boolean} [opts.autoNavigate]
+ * @param {object} [opts.autoNavigateOptions]
+ * @param {number} [opts.autoNavigateLoginGraceMs]
  * @returns {Promise<CapturedRequest[]>}
  */
-export async function launchBrowser({ target, headless = false, scope, timeoutMs = 60000, onReady }) {
+export async function launchBrowser({
+  target,
+  headless = false,
+  scope,
+  timeoutMs = 60000,
+  onReady,
+  autoNavigate = false,
+  autoNavigateOptions = {},
+  autoNavigateLoginGraceMs = 5000,
+}) {
   const browser = await chromium.launch({
     headless,
     args: ['--disable-blink-features=AutomationControlled'],
@@ -42,9 +57,16 @@ export async function launchBrowser({ target, headless = false, scope, timeoutMs
   /** @type {CapturedRequest[]} */
   const traffic = [];
 
+  // Running counters for heartbeat
+  let totalRequests = 0;
+  let inScopeRequests = 0;
+  let jsonApiRequests = 0;
+
   page.on('requestfinished', async (request) => {
     const url = request.url();
+    totalRequests++;
     if (scope && !scope.isAllowed(url)) return;
+    inScopeRequests++;
 
     const response = await request.response();
     const t0 = Date.now();
@@ -72,7 +94,9 @@ export async function launchBrowser({ target, headless = false, scope, timeoutMs
     row.responseTime = Math.max(0, Date.now() - t0);
 
     const ct = (response.headers()['content-type'] || '').toLowerCase();
-    if (ct.includes('application/json')) {
+    const rt = String(request.resourceType() || '').toLowerCase();
+    if (ct.includes('application/json') || (['xhr', 'fetch'].includes(rt) && ct.includes('json'))) {
+      jsonApiRequests++;
       try {
         row.responseBody = await response.json();
       } catch {
@@ -99,19 +123,64 @@ export async function launchBrowser({ target, headless = false, scope, timeoutMs
     }
   });
 
-  console.log(`Navigating to ${target}...`);
-  await page.goto(target, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+  /** @type {AbortController} */
+  const abortController = new AbortController();
 
-  if (onReady) await onReady();
+  const onSigint = () => {
+    console.log('\n[apirecon] SIGINT received — stopping capture and saving…');
+    abortController.abort();
+  };
+  process.once('SIGINT', onSigint);
 
-  console.log('Browser is open. Navigate manually, then press ENTER in this terminal to finish…');
+  try {
+    console.log(`Navigating to ${target}...`);
+    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
 
-  await new Promise((resolve) => {
-    process.stdin.once('data', () => resolve(undefined));
-  });
+    if (onReady) await onReady();
 
-  await new Promise((r) => setTimeout(r, 2000));
-  await browser.close();
+    /** @type {() => { total: number, inScope: number, jsonApi: number }} */
+    const getTrafficStats = () => ({
+      total: totalRequests,
+      inScope: inScopeRequests,
+      jsonApi: jsonApiRequests,
+    });
+
+    const runNavigator = async () => {
+      const nav = new AutoNavigator(page, {
+        verbose: true,
+        getTrafficStats,
+        signal: abortController.signal,
+        ...autoNavigateOptions,
+      });
+      await nav.run();
+    };
+
+    if (autoNavigate) {
+      console.log(
+        `Auto-navigate: waiting ${autoNavigateLoginGraceMs}ms — log in now if needed, then crawl starts.`,
+      );
+      await sleep(autoNavigateLoginGraceMs);
+      await runNavigator();
+    } else {
+      console.log('Browser is open. Log in manually, then:');
+      console.log('  [ENTER] or "a" + ENTER → automated SPA crawl (safe — skips destructive actions)');
+      console.log('  any other input + ENTER → finish capture now');
+      console.log('');
+
+      const userInput = await new Promise((resolve) => {
+        process.stdin.once('data', (data) => resolve(data.toString().trim()));
+      });
+
+      if (userInput === '' || userInput.toLowerCase() === 'a') {
+        await runNavigator();
+      }
+    }
+
+    await sleep(3000);
+  } finally {
+    process.off('SIGINT', onSigint);
+    await browser.close().catch(() => {});
+  }
 
   return traffic.filter((t) => t.type === 'request' && typeof t.status === 'number');
 }
