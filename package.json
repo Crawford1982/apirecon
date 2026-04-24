@@ -12,6 +12,9 @@
     "recon:browser": "node scripts/recon-browser.mjs",
     "recon:analyze": "node scripts/recon-analyze.mjs",
     "recon:replay": "node scripts/recon-replay.mjs",
+    "recon:diff": "node scripts/recon-diff.mjs",
+    "recon:full": "node scripts/recon-full.mjs",
+    "recon:report": "node scripts/recon-report.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {

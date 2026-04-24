@@ -8,6 +8,7 @@ import {
   waitUntilHostnameInContext,
 } from './wait-for-auth.mjs';
 import { sleep } from './utils.mjs';
+import { extractAuthBundle } from './auth-bundle.mjs';
 
 /**
  * @typedef {object} CapturedRequest
@@ -41,7 +42,7 @@ import { sleep } from './utils.mjs';
  * @param {string} [opts.chromeProfileDirectory] “Default”, “Profile 1”, …
  * @param {number} [opts.loginTimeoutMs] wait for you.23andme.com during OAuth (default 180000)
  * @param {boolean} [opts.waitForYouApp] after navigation, poll until hostname is you.23andme.com (23andMe targets)
- * @returns {Promise<CapturedRequest[]>}
+ * @returns {Promise<{ traffic: CapturedRequest[], authBundle: import('./auth-bundle.mjs').AuthBundle | null }>}
  */
 export async function launchBrowser({
   target,
@@ -281,6 +282,23 @@ export async function launchBrowser({
       let crawlPage = (await findPageOnHost(context, 'you.23andme.com')) ?? page;
       await crawlPage.bringToFront().catch(() => {});
 
+      // Auto-navigator deliberately skips auth.23andme.com. If the user completed Google OAuth
+      // in another tab (or the wait timed out) the active tab can still be auth — the crawl then
+      // has nothing to do and finishes in a second, which looks "dead". Nudge the main tab to the
+      // app so clicking works (session cookies already apply after login).
+      try {
+        const u = String(crawlPage.url() || '');
+        if (u.includes('auth.23andme.com') && String(target).includes('23andme.com')) {
+          console.log(
+            '[apirecon] Crawl tab is still on auth.23andme.com — the crawler skips that host, so it would do almost nothing. Navigating to https://you.23andme.com/ (finish any login in this window if you are sent back to auth)…',
+          );
+          await crawlPage.goto('https://you.23andme.com/', { waitUntil: 'domcontentloaded', timeout: 120000 });
+          console.log(`[apirecon] Crawl start URL: ${crawlPage.url()}`);
+        }
+      } catch (e) {
+        console.warn(`[apirecon] Could not go to you.23andme.com: ${/** @type {Error} */ (e).message}`);
+      }
+
       const nav = new AutoNavigator(crawlPage, {
         verbose: true,
         getTrafficStats,
@@ -318,11 +336,22 @@ export async function launchBrowser({
     }
 
     await sleep(3000);
+
+    /** @type {import('./auth-bundle.mjs').AuthBundle | null} */
+    let authBundle = null;
+    try {
+      authBundle = await extractAuthBundle({ context, target, traffic });
+    } catch (e) {
+      console.warn(`[apirecon] auth-bundle extraction failed: ${/** @type {Error} */ (e).message}`);
+    }
+
+    return {
+      traffic: traffic.filter((t) => t.type === 'request' && typeof t.status === 'number'),
+      authBundle,
+    };
   } finally {
     process.off('SIGINT', onSigint);
     await context.close().catch(() => {});
     if (browser) await browser.close().catch(() => {});
   }
-
-  return traffic.filter((t) => t.type === 'request' && typeof t.status === 'number');
 }

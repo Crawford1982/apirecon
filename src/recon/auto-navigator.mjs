@@ -170,6 +170,7 @@ export class AutoNavigator {
     this.log('Auto-navigator starting');
     this.log(`  origin:  ${this.startOrigin}`);
     this.log(`  limits:  ${this.options.maxRoutes} routes · ${this.options.maxTotalClicks} clicks · ${Math.round(this.options.maxDurationMs / 1000)}s`);
+    this.log('  (Heartbeats every 5s in this terminal — JSON API / click counts will move as the crawl runs.)');
     if (this.options.allowedCrawlHosts.length) {
       this.log(`  crawl only hosts: ${this.options.allowedCrawlHosts.join(', ')}`);
     } else if (this.options.excludeCrawlHosts.length) {
@@ -248,6 +249,7 @@ export class AutoNavigator {
 
     this.stats.routesVisited++;
     this.log(`[route ${this.stats.routesVisited}/${this.options.maxRoutes}] ${this.page.url()}`);
+    this.log('  settling page (SPAs: may take a few seconds; network never goes fully idle)…');
 
     await this.waitForStableState();
     await this.dismissConsentAndCookieBanners();
@@ -618,7 +620,9 @@ export class AutoNavigator {
   async waitForStableState() {
     await this.page.waitForLoadState('domcontentloaded').catch(() => {});
     await sleep(800);
-    await this.page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {});
+    // Do not require full network idle on SPAs with long-polling; cap wait.
+    await this.page.waitForLoadState('load', { timeout: 5000 }).catch(() => {});
+    await this.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
     try {
       await this.page.waitForFunction(
         () => {
@@ -759,33 +763,16 @@ export class AutoNavigator {
 
   async hookPushState() {
     try {
-      await this.page.addInitScript(() => {
-        const push = history.pushState;
-        const replace = history.replaceState;
-        /** @param {string} u */
-        const dispatch = (u) => {
-          try {
-            window.dispatchEvent(new CustomEvent('__apirecon_route', { detail: u }));
-          } catch {
-            /* ignore */
-          }
-        };
-        history.pushState = function (...args) {
-          const r = push.apply(this, args);
-          dispatch(String(args[2] ?? location.href));
-          return r;
-        };
-        history.replaceState = function (...args) {
-          const r = replace.apply(this, args);
-          dispatch(String(args[2] ?? location.href));
-          return r;
-        };
-        window.addEventListener('popstate', () => dispatch(location.href));
-      });
-      await this.page.exposeFunction('__apireconRouteSeen', (u) => {
+      // Playwright: page.addInitScript() runs on *new* documents only, not the tab that is
+      // already showing after you logged in. Without patching `history` on the *current*
+      // document, client-side route changes (pushState) never enqueue new URLs and the
+      // crawl can look "dead" after one route. We patch the live page here and still
+      // register the init script for any full page reloads.
+      const routeBridge = (u) => {
         if (!u || typeof u !== 'string') return;
         try {
-          const abs = new URL(u, this.page.url()).toString();
+          const pageUrl = this.page.url();
+          const abs = new URL(u, pageUrl).toString();
           const host = new URL(abs).hostname.toLowerCase();
           if (this.isCrawlHostBlocked(host)) return;
           if (this.isSignupStylePath(abs)) return;
@@ -797,15 +784,47 @@ export class AutoNavigator {
         } catch {
           /* ignore */
         }
+      };
+      await this.page.exposeFunction('__apireconRouteSeen', (u) => {
+        routeBridge(u);
       });
-      await this.page.evaluate(() => {
-        window.addEventListener('__apirecon_route', (/** @type {Event} */ ev) => {
-          // @ts-ignore custom event detail
-          const u = ev.detail;
-          // @ts-ignore exposed binding
-          window.__apireconRouteSeen(u).catch(() => {});
+
+      const patchHistoryInPage = () => {
+        if (/** @type {any} */ (window).__apireconHistoryHooked) return;
+        /** @type {any} */ (window).__apireconHistoryHooked = true;
+        const push = history.pushState;
+        const replace = history.replaceState;
+        /** @param {string} u */
+        const dispatch = (u) => {
+          try {
+            window.dispatchEvent(new CustomEvent('__apirecon_route', { detail: u }));
+          } catch {
+            /* ignore */
+          }
+        };
+        history.pushState = function (...args) {
+          const r = push.apply(/** @type {any} */ (this), args);
+          dispatch(String(args[2] ?? location.href));
+          return r;
+        };
+        history.replaceState = function (...args) {
+          const r = replace.apply(/** @type {any} */ (this), args);
+          dispatch(String(args[2] ?? location.href));
+          return r;
+        };
+        window.addEventListener('popstate', () => dispatch(location.href));
+        window.addEventListener('__apirecon_route', (ev) => {
+          const u = /** @type {CustomEvent} */ (ev).detail;
+          // @ts-ignore Playwright-injected
+          if (window.__apireconRouteSeen) {
+            // @ts-ignore
+            void window.__apireconRouteSeen(u);
+          }
         });
-      });
+      };
+      await this.page.addInitScript(patchHistoryInPage);
+      await this.page.evaluate(patchHistoryInPage);
+      this.log('  SPA route hook installed on this tab (pushState / popState → crawl queue).');
     } catch {
       /* setup hooks best-effort */
     }

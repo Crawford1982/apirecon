@@ -1,8 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+import { RateGovernor } from './rate-governor.mjs';
 
 /** Bash-safe single-quoted string for copy-paste curl one-liners. */
 export function shellSingleQuote(str) {
@@ -25,6 +23,7 @@ export class IdorReplay {
     this.auth = auth;
     /** @type {unknown[]} */
     this.results = [];
+    this.governor = new RateGovernor({ maxRps });
   }
 
   /**
@@ -95,18 +94,21 @@ export class IdorReplay {
    * @param {object[]} queue
    */
   async runSequential(queue) {
-    const minInterval = 1000 / Math.max(1, this.maxRps);
-    let last = 0;
-
     for (let i = 0; i < queue.length; i++) {
       const testCase = queue[i];
-      const now = Date.now();
-      const wait = Math.max(0, minInterval - (now - last));
-      if (wait) await sleep(wait);
-      last = Date.now();
+      await this.governor.acquire(testCase.testUrl);
 
       process.stdout.write(`\rProgress: ${i + 1}/${queue.length}`);
       const result = await this.executeTest(testCase);
+      this.governor.report(testCase.testUrl, {
+        status: result.responseStatus,
+        retryAfter: result.retryAfter,
+      });
+      if (result.responseStatus === 429) {
+        process.stdout.write(
+          `\n[rate] 429 — backing off host, new rps≈${this.governor.state(testCase.testUrl).s.rps.toFixed(2)}\n`,
+        );
+      }
       this.results.push(result);
     }
     process.stdout.write('\n');
@@ -160,6 +162,7 @@ export class IdorReplay {
         method: testCase.method,
         responseStatus: response.status,
         responseStatusText: response.statusText,
+        retryAfter: response.headers.get('retry-after') || null,
         contentType: ct,
         body,
         bodyText,
